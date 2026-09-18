@@ -1,117 +1,69 @@
 package dev.example;
 
-import java.lang.foreign.Arena;
-import java.lang.foreign.FunctionDescriptor;
-import java.lang.foreign.Linker;
-import java.lang.foreign.MemorySegment;
-import java.lang.foreign.SymbolLookup;
-import java.lang.invoke.MethodHandle;
-import java.nio.file.Path;
+import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpServer;
+import java.io.IOException;
+import java.io.InputStream;
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
+import java.util.concurrent.Executors;
 
-import static java.lang.foreign.ValueLayout.ADDRESS;
-import static java.lang.foreign.ValueLayout.JAVA_INT;
-
-/** Executa uma senoide de 440 Hz em uma instância embutida do Csound 7. */
+/** Servidor HTTP local da interface do Csound. */
 public final class Main {
-    private static final String CSD = """
-            <CsoundSynthesizer>
-            <CsOptions>
-            -odac -d
-            </CsOptions>
-            <CsInstruments>
-            sr = 48000
-            ksmps = 64
-            nchnls = 1
-            0dbfs = 1
+    private static final byte[] PAGE = resource("/index.html");
+    private Main() {}
 
-            instr 1
-                aSenoide oscili 0.2, 440
-                out aSenoide
-            endin
-            </CsInstruments>
-            <CsScore>
-            i 1 0 2
-            </CsScore>
-            </CsoundSynthesizer>
-            """;
-
-    private Main() {
+    public static void main(String[] args) throws IOException {
+        var engine = new CsoundEngine();
+        var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 8080), 0);
+        server.createContext("/", Main::home);
+        server.createContext("/api/play", exchange -> play(exchange, engine));
+        server.setExecutor(Executors.newVirtualThreadPerTaskExecutor());
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> server.stop(0)));
+        server.start();
+        System.out.println("Interface disponível em http://localhost:8080");
+        System.out.println("Pressione Ctrl+C para encerrar.");
     }
 
-    public static void main(String[] args) throws Throwable {
-        loadCsoundLibrary();
-
-        Linker linker = Linker.nativeLinker();
-        SymbolLookup symbols = SymbolLookup.loaderLookup();
-
-        MethodHandle create = downcall(linker, symbols, "csoundCreate",
-                FunctionDescriptor.of(ADDRESS, ADDRESS, ADDRESS));
-        MethodHandle compileCsd = downcall(linker, symbols, "csoundCompileCSD",
-                FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_INT, JAVA_INT));
-        MethodHandle start = downcall(linker, symbols, "csoundStart",
-                FunctionDescriptor.of(JAVA_INT, ADDRESS));
-        MethodHandle performKsmps = downcall(linker, symbols, "csoundPerformKsmps",
-                FunctionDescriptor.of(JAVA_INT, ADDRESS));
-        MethodHandle reset = downcall(linker, symbols, "csoundReset",
-                FunctionDescriptor.ofVoid(ADDRESS));
-        MethodHandle destroy = downcall(linker, symbols, "csoundDestroy",
-                FunctionDescriptor.ofVoid(ADDRESS));
-
-        MemorySegment csound = (MemorySegment) create.invokeExact(MemorySegment.NULL, MemorySegment.NULL);
-        if (csound.equals(MemorySegment.NULL)) {
-            throw new IllegalStateException("O Csound não pôde ser instanciado.");
-        }
-
-        try (Arena arena = Arena.ofConfined()) {
-            MemorySegment csd = arena.allocateFrom(CSD);
-            check((int) compileCsd.invokeExact(csound, csd, 1, 0), "compilar o CSD");
-            check((int) start.invokeExact(csound), "iniciar o engine");
-
-            System.out.println("Csound 7 tocando uma senoide de 440 Hz por 2 segundos...");
-            while ((int) performKsmps.invokeExact(csound) == 0) {
-                // O Csound produz um bloco de áudio a cada iteração.
-            }
-        } finally {
-            reset.invokeExact(csound);
-            destroy.invokeExact(csound);
-        }
-    }
-
-    private static MethodHandle downcall(
-            Linker linker, SymbolLookup symbols, String name, FunctionDescriptor descriptor) {
-        MemorySegment symbol = symbols.find(name)
-                .orElseThrow(() -> new UnsatisfiedLinkError("Símbolo não encontrado: " + name));
-        return linker.downcallHandle(symbol, descriptor);
-    }
-
-    private static void loadCsoundLibrary() {
-        String explicitPath = System.getProperty("csound.library.path");
-        if (explicitPath != null && !explicitPath.isBlank()) {
-            System.load(Path.of(explicitPath).toAbsolutePath().toString());
+    private static void home(HttpExchange exchange) throws IOException {
+        if (!exchange.getRequestMethod().equals("GET") || !exchange.getRequestURI().getPath().equals("/")) {
+            send(exchange, 404, "text/plain; charset=utf-8", bytes("Não encontrado"));
             return;
         }
-
-        UnsatisfiedLinkError lastError = null;
-        for (String name : new String[]{"csound64", "csound"}) {
-            try {
-                System.loadLibrary(name);
-                return;
-            } catch (UnsatisfiedLinkError error) {
-                lastError = error;
-            }
-        }
-
-        throw new UnsatisfiedLinkError("""
-                A biblioteca nativa do Csound 7 não foi encontrada.
-                Adicione sua pasta ao PATH ou execute com:
-                  -Dcsound.library.path=C:\\caminho\\para\\csound64.dll
-                Detalhe: %s
-                """.formatted(lastError == null ? "desconhecido" : lastError.getMessage()));
+        send(exchange, 200, "text/html; charset=utf-8", PAGE);
     }
 
-    private static void check(int result, String action) {
-        if (result != 0) {
-            throw new IllegalStateException("Falha ao " + action + " (código " + result + ").");
+    private static void play(HttpExchange exchange, CsoundEngine engine) throws IOException {
+        if (!exchange.getRequestMethod().equals("POST")) {
+            exchange.getResponseHeaders().set("Allow", "POST");
+            send(exchange, 405, "application/json; charset=utf-8", bytes("{\"error\":\"Use POST\"}"));
+            return;
+        }
+        try {
+            engine.play440Hz();
+            send(exchange, 200, "application/json; charset=utf-8",
+                    bytes("{\"message\":\"Senoide de 440 Hz concluída\"}"));
+        } catch (Throwable error) {
+            error.printStackTrace();
+            String message = error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage();
+            String json = "{\"error\":\"" + message.replace("\\", "\\\\").replace("\"", "\\\"") + "\"}";
+            send(exchange, 500, "application/json; charset=utf-8", bytes(json));
         }
     }
+
+    private static void send(HttpExchange exchange, int status, String type, byte[] body) throws IOException {
+        exchange.getResponseHeaders().set("Content-Type", type);
+        exchange.getResponseHeaders().set("Cache-Control", "no-store");
+        exchange.sendResponseHeaders(status, body.length);
+        try (var response = exchange.getResponseBody()) { response.write(body); }
+    }
+
+    private static byte[] resource(String name) {
+        try (InputStream input = Main.class.getResourceAsStream(name)) {
+            if (input == null) throw new IllegalStateException("Recurso não encontrado: " + name);
+            return input.readAllBytes();
+        } catch (IOException error) { throw new ExceptionInInitializerError(error); }
+    }
+
+    private static byte[] bytes(String value) { return value.getBytes(StandardCharsets.UTF_8); }
 }
