@@ -9,6 +9,11 @@
     body { min-height: 100vh; margin: 0; display: grid; place-items: center; background: #111827; }
     main { width: min(90%, 28rem); padding: 2rem; text-align: center; background: #1f2937; border-radius: 1rem; box-shadow: 0 1rem 3rem #0006; }
     p { color: #cbd5e1; }
+    fieldset { margin: 1.5rem 0; padding: 1rem; border: 1px solid #475569; border-radius: .6rem; text-align: left; }
+    legend { padding: 0 .4rem; font-weight: 700; }
+    .waves { display: grid; grid-template-columns: repeat(2, 1fr); gap: .8rem; }
+    label { cursor: pointer; }
+    input { margin-right: .4rem; accent-color: #67e8f9; }
     button { border: 0; border-radius: .6rem; padding: .8rem 1.2rem; font: inherit; font-weight: 700; color: #111827; background: #67e8f9; cursor: pointer; }
     button:disabled { opacity: .55; cursor: wait; }
     #status { min-height: 1.5rem; margin-bottom: 0; }
@@ -18,6 +23,15 @@
   <main>
     <h1>Csound 7</h1>
     <p>Acione o engine nativo a partir do browser.</p>
+    <fieldset>
+      <legend>Forma de onda</legend>
+      <div class="waves">
+        <label><input type="radio" name="waveform" value="sine" checked> Senoide</label>
+        <label><input type="radio" name="waveform" value="saw"> Serra</label>
+        <label><input type="radio" name="waveform" value="square"> Quadrada</label>
+        <label><input type="radio" name="waveform" value="triangle"> Triangular</label>
+      </div>
+    </fieldset>
     <button id="play" type="button">▶ Tocar 440 Hz</button>
     <p id="status" role="status" aria-live="polite">Pronto</p>
   </main>
@@ -28,7 +42,9 @@
       button.disabled = true;
       status.textContent = 'Tocando por 2 segundos…';
       try {
-        const response = await fetch('/api/play', { method: 'POST' });
+        const waveform = document.querySelector('input[name="waveform"]:checked').value;
+        const params = new URLSearchParams({ waveform });
+        const response = await fetch(`/api/play?${params}`, { method: 'POST' });
         const result = await response.json();
         if (!response.ok) throw new Error(result.error || 'Falha ao executar o Csound');
         status.textContent = result.message;

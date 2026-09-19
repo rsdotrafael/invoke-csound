@@ -7,13 +7,21 @@ import java.lang.foreign.MemorySegment;
 import java.lang.foreign.SymbolLookup;
 import java.lang.invoke.MethodHandle;
 import java.nio.file.Path;
+import java.util.Map;
 
 import static java.lang.foreign.ValueLayout.ADDRESS;
 import static java.lang.foreign.ValueLayout.JAVA_INT;
 
 /** Adaptador mínimo para a API C do Csound 7. */
 final class CsoundEngine {
-    private static final String CSD = """
+    private static final Map<String, String> OSCILLATORS = Map.of(
+            "sine", "aOnda oscili 0.2, 440",
+            "saw", "aOnda vco2 0.2, 440, 0",
+            "square", "aOnda vco2 0.2, 440, 10",
+            "triangle", "aOnda vco2 0.2, 440, 12"
+    );
+
+    private static final String CSD_TEMPLATE = """
             <CsoundSynthesizer>
             <CsOptions>
             -odac -d
@@ -25,8 +33,8 @@ final class CsoundEngine {
             0dbfs = 1
 
             instr 1
-                aSenoide oscili 0.2, 440
-                out aSenoide
+                %s
+                out aOnda
             endin
             </CsInstruments>
             <CsScore>
@@ -55,13 +63,18 @@ final class CsoundEngine {
         destroy = downcall(linker, symbols, "csoundDestroy", FunctionDescriptor.ofVoid(ADDRESS));
     }
 
-    synchronized void play440Hz() throws Throwable {
+    synchronized void play440Hz(String waveform) throws Throwable {
+        String oscillator = OSCILLATORS.get(waveform);
+        if (oscillator == null) {
+            throw new IllegalArgumentException("Forma de onda inválida: " + waveform);
+        }
+
         MemorySegment csound = (MemorySegment) create.invokeExact(MemorySegment.NULL, MemorySegment.NULL);
         if (csound.equals(MemorySegment.NULL)) {
             throw new IllegalStateException("O Csound não pôde ser instanciado.");
         }
         try (Arena arena = Arena.ofConfined()) {
-            MemorySegment csd = arena.allocateFrom(CSD);
+            MemorySegment csd = arena.allocateFrom(CSD_TEMPLATE.formatted(oscillator));
             check((int) compileCsd.invokeExact(csound, csd, 1, 0), "compilar o CSD");
             check((int) start.invokeExact(csound), "iniciar o engine");
             while ((int) performKsmps.invokeExact(csound) == 0) {

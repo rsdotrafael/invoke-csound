@@ -5,6 +5,7 @@ import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.InetSocketAddress;
+import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.Executors;
 
@@ -40,15 +41,31 @@ public final class Main {
             return;
         }
         try {
-            engine.play440Hz();
+            String waveform = queryParameter(exchange, "waveform", "sine");
+            engine.play440Hz(waveform);
             send(exchange, 200, "application/json; charset=utf-8",
-                    bytes("{\"message\":\"Senoide de 440 Hz concluída\"}"));
+                    bytes("{\"message\":\"Onda de 440 Hz concluída\"}"));
+        } catch (IllegalArgumentException error) {
+            send(exchange, 400, "application/json; charset=utf-8",
+                    bytes("{\"error\":\"Forma de onda inválida\"}"));
         } catch (Throwable error) {
             error.printStackTrace();
             String message = error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage();
             String json = "{\"error\":\"" + message.replace("\\", "\\\\").replace("\"", "\\\"") + "\"}";
             send(exchange, 500, "application/json; charset=utf-8", bytes(json));
         }
+    }
+
+    private static String queryParameter(HttpExchange exchange, String name, String defaultValue) {
+        String query = exchange.getRequestURI().getRawQuery();
+        if (query == null) return defaultValue;
+        for (String pair : query.split("&")) {
+            String[] parts = pair.split("=", 2);
+            if (URLDecoder.decode(parts[0], StandardCharsets.UTF_8).equals(name)) {
+                return parts.length == 2 ? URLDecoder.decode(parts[1], StandardCharsets.UTF_8) : "";
+            }
+        }
+        return defaultValue;
     }
 
     private static void send(HttpExchange exchange, int status, String type, byte[] body) throws IOException {
