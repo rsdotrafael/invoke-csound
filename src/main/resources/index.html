@@ -7,14 +7,18 @@
   <style>
     :root { color-scheme: dark; font-family: system-ui, sans-serif; }
     body { min-height: 100vh; margin: 0; display: grid; place-items: center; background: #111827; }
-    main { width: min(90%, 28rem); padding: 2rem; text-align: center; background: #1f2937; border-radius: 1rem; box-shadow: 0 1rem 3rem #0006; }
+    main { width: min(90%, 30rem); padding: 2rem; background: #1f2937; border-radius: 1rem; box-shadow: 0 1rem 3rem #0006; }
+    h1, .intro, #status { text-align: center; }
     p { color: #cbd5e1; }
-    fieldset { margin: 1.5rem 0; padding: 1rem; border: 1px solid #475569; border-radius: .6rem; text-align: left; }
+    fieldset { margin: 1.5rem 0; padding: 1rem; border: 1px solid #475569; border-radius: .6rem; }
     legend { padding: 0 .4rem; font-weight: 700; }
     .waves { display: grid; grid-template-columns: repeat(2, 1fr); gap: .8rem; }
-    label { cursor: pointer; }
-    input { margin-right: .4rem; accent-color: #67e8f9; }
-    button { border: 0; border-radius: .6rem; padding: .8rem 1.2rem; font: inherit; font-weight: 700; color: #111827; background: #67e8f9; cursor: pointer; }
+    .control { margin: 1.2rem 0; }
+    .control label { display: flex; justify-content: space-between; margin-bottom: .4rem; }
+    input[type="range"] { width: 100%; accent-color: #67e8f9; }
+    input[type="radio"] { margin-right: .4rem; accent-color: #67e8f9; }
+    button { display: block; width: 100%; border: 0; border-radius: .6rem; padding: .9rem; font: inherit; font-weight: 700; color: #111827; background: #67e8f9; cursor: pointer; }
+    button.running { color: white; background: #ef4444; }
     button:disabled { opacity: .55; cursor: wait; }
     #status { min-height: 1.5rem; margin-bottom: 0; }
   </style>
@@ -22,8 +26,9 @@
 <body>
   <main>
     <h1>Csound 7</h1>
-    <p>Acione o engine nativo a partir do browser.</p>
-    <fieldset>
+    <p class="intro">Configure o oscilador e inicie o engine nativo.</p>
+
+    <fieldset id="waveforms">
       <legend>Forma de onda</legend>
       <div class="waves">
         <label><input type="radio" name="waveform" value="sine" checked> Senoide</label>
@@ -32,22 +37,89 @@
         <label><input type="radio" name="waveform" value="triangle"> Triangular</label>
       </div>
     </fieldset>
-    <button id="play" type="button">▶ Tocar 440 Hz</button>
-    <p id="status" role="status" aria-live="polite">Pronto</p>
+
+    <div class="control">
+      <label for="frequency"><span>Frequência</span><output id="frequency-value">440 Hz</output></label>
+      <input id="frequency" type="range" min="20" max="2000" step="1" value="440">
+    </div>
+    <div class="control">
+      <label for="volume"><span>Volume</span><output id="volume-value">20%</output></label>
+      <input id="volume" type="range" min="0" max="0.5" step="0.01" value="0.2">
+    </div>
+    <div class="control">
+      <label for="phase"><span>Fase inicial</span><output id="phase-value">0°</output></label>
+      <input id="phase" type="range" min="0" max="1" step="0.01" value="0">
+    </div>
+
+    <button id="toggle" type="button">▶ Iniciar</button>
+    <p id="status" role="status" aria-live="polite">Parado</p>
   </main>
   <script>
-    const button = document.querySelector('#play');
+    const button = document.querySelector('#toggle');
     const status = document.querySelector('#status');
+    const frequency = document.querySelector('#frequency');
+    const volume = document.querySelector('#volume');
+    const phase = document.querySelector('#phase');
+    const waveforms = document.querySelector('#waveforms');
+    let running = false;
+    let controlTimer;
+
+    const showValues = () => {
+      document.querySelector('#frequency-value').value = `${frequency.value} Hz`;
+      document.querySelector('#volume-value').value = `${Math.round(volume.value * 100)}%`;
+      document.querySelector('#phase-value').value = `${Math.round(phase.value * 360)}°`;
+    };
+    const controlParams = () => new URLSearchParams({
+      frequency: frequency.value,
+      volume: volume.value,
+      phase: phase.value
+    });
+
+    const sendControls = async () => {
+      if (!running) return;
+      try {
+        const response = await fetch(`/api/control?${controlParams()}`, { method: 'POST' });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error);
+      } catch (error) {
+        status.textContent = `Erro: ${error.message}`;
+      }
+    };
+
+    [frequency, volume, phase].forEach(input => input.addEventListener('input', () => {
+      showValues();
+      clearTimeout(controlTimer);
+      controlTimer = setTimeout(sendControls, 35);
+    }));
+
     button.addEventListener('click', async () => {
       button.disabled = true;
-      status.textContent = 'Tocando por 2 segundos…';
       try {
-        const waveform = document.querySelector('input[name="waveform"]:checked').value;
-        const params = new URLSearchParams({ waveform });
-        const response = await fetch(`/api/play?${params}`, { method: 'POST' });
-        const result = await response.json();
-        if (!response.ok) throw new Error(result.error || 'Falha ao executar o Csound');
-        status.textContent = result.message;
+        if (running) {
+          const response = await fetch('/api/stop', { method: 'POST' });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error);
+          running = false;
+          button.textContent = '▶ Iniciar';
+          button.classList.remove('running');
+          waveforms.disabled = false;
+          status.textContent = 'Parado';
+        } else {
+          const params = new URLSearchParams({
+            waveform: document.querySelector('input[name="waveform"]:checked').value,
+            frequency: frequency.value,
+            volume: volume.value,
+            phase: phase.value
+          });
+          const response = await fetch(`/api/start?${params}`, { method: 'POST' });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error);
+          running = true;
+          button.textContent = '■ Parar';
+          button.classList.add('running');
+          waveforms.disabled = true;
+          status.textContent = 'Tocando — sliders ativos em tempo real';
+        }
       } catch (error) {
         status.textContent = `Erro: ${error.message}`;
       } finally {

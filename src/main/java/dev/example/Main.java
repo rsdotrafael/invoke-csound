@@ -18,9 +18,14 @@ public final class Main {
         var engine = new CsoundEngine();
         var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 8080), 0);
         server.createContext("/", Main::home);
-        server.createContext("/api/play", exchange -> play(exchange, engine));
+        server.createContext("/api/start", exchange -> start(exchange, engine));
+        server.createContext("/api/control", exchange -> control(exchange, engine));
+        server.createContext("/api/stop", exchange -> stop(exchange, engine));
         server.setExecutor(Executors.newVirtualThreadPerTaskExecutor());
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> server.stop(0)));
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            try { engine.stop(); } catch (Exception ignored) {}
+            server.stop(0);
+        }));
         server.start();
         System.out.println("Interface disponível em http://localhost:8080");
         System.out.println("Pressione Ctrl+C para encerrar.");
@@ -28,35 +33,74 @@ public final class Main {
 
     private static void home(HttpExchange exchange) throws IOException {
         if (!exchange.getRequestMethod().equals("GET") || !exchange.getRequestURI().getPath().equals("/")) {
-            send(exchange, 404, "text/plain; charset=utf-8", bytes("Não encontrado"));
+            send(exchange, 404, "text/plain; charset=utf-8", "Não encontrado");
             return;
         }
-        send(exchange, 200, "text/html; charset=utf-8", PAGE);
+        send(exchange, 200, "text/html; charset=utf-8", new String(PAGE, StandardCharsets.UTF_8));
     }
 
-    private static void play(HttpExchange exchange, CsoundEngine engine) throws IOException {
-        if (!exchange.getRequestMethod().equals("POST")) {
-            exchange.getResponseHeaders().set("Allow", "POST");
-            send(exchange, 405, "application/json; charset=utf-8", bytes("{\"error\":\"Use POST\"}"));
-            return;
-        }
+    private static void start(HttpExchange exchange, CsoundEngine engine) throws IOException {
+        if (!requirePost(exchange)) return;
         try {
-            String waveform = queryParameter(exchange, "waveform", "sine");
-            engine.play440Hz(waveform);
-            send(exchange, 200, "application/json; charset=utf-8",
-                    bytes("{\"message\":\"Onda de 440 Hz concluída\"}"));
+            String waveform = parameter(exchange, "waveform", "sine");
+            double frequency = numberParameter(exchange, "frequency", 440);
+            double volume = numberParameter(exchange, "volume", 0.2);
+            double phase = numberParameter(exchange, "phase", 0);
+            engine.start(waveform, frequency, volume, phase);
+            sendJson(exchange, 200, "{\"message\":\"Csound iniciado\"}");
         } catch (IllegalArgumentException error) {
-            send(exchange, 400, "application/json; charset=utf-8",
-                    bytes("{\"error\":\"Forma de onda inválida\"}"));
+            sendJson(exchange, 400, "{\"error\":\"Parâmetros inválidos\"}");
+        } catch (IllegalStateException error) {
+            sendJson(exchange, 409, "{\"error\":\"" + escape(error.getMessage()) + "\"}");
         } catch (Throwable error) {
             error.printStackTrace();
-            String message = error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage();
-            String json = "{\"error\":\"" + message.replace("\\", "\\\\").replace("\"", "\\\"") + "\"}";
-            send(exchange, 500, "application/json; charset=utf-8", bytes(json));
+            sendJson(exchange, 500, "{\"error\":\"Não foi possível iniciar o Csound\"}");
         }
     }
 
-    private static String queryParameter(HttpExchange exchange, String name, String defaultValue) {
+    private static void stop(HttpExchange exchange, CsoundEngine engine) throws IOException {
+        if (!requirePost(exchange)) return;
+        try {
+            engine.stop();
+            sendJson(exchange, 200, "{\"message\":\"Csound parado\"}");
+        } catch (IllegalStateException error) {
+            sendJson(exchange, 409, "{\"error\":\"" + escape(error.getMessage()) + "\"}");
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            sendJson(exchange, 500, "{\"error\":\"Parada interrompida\"}");
+        }
+    }
+
+    private static void control(HttpExchange exchange, CsoundEngine engine) throws IOException {
+        if (!requirePost(exchange)) return;
+        try {
+            double frequency = numberParameter(exchange, "frequency", 440);
+            double volume = numberParameter(exchange, "volume", 0.2);
+            double phase = numberParameter(exchange, "phase", 0);
+            engine.update(frequency, volume, phase);
+            sendJson(exchange, 200, "{\"message\":\"Controles atualizados\"}");
+        } catch (IllegalArgumentException error) {
+            sendJson(exchange, 400, "{\"error\":\"Parâmetros inválidos\"}");
+        } catch (IllegalStateException error) {
+            sendJson(exchange, 409, "{\"error\":\"" + escape(error.getMessage()) + "\"}");
+        } catch (Throwable error) {
+            error.printStackTrace();
+            sendJson(exchange, 500, "{\"error\":\"Não foi possível atualizar o Csound\"}");
+        }
+    }
+
+    private static boolean requirePost(HttpExchange exchange) throws IOException {
+        if (exchange.getRequestMethod().equals("POST")) return true;
+        exchange.getResponseHeaders().set("Allow", "POST");
+        sendJson(exchange, 405, "{\"error\":\"Use POST\"}");
+        return false;
+    }
+
+    private static double numberParameter(HttpExchange exchange, String name, double defaultValue) {
+        return Double.parseDouble(parameter(exchange, name, Double.toString(defaultValue)));
+    }
+
+    private static String parameter(HttpExchange exchange, String name, String defaultValue) {
         String query = exchange.getRequestURI().getRawQuery();
         if (query == null) return defaultValue;
         for (String pair : query.split("&")) {
@@ -68,11 +112,16 @@ public final class Main {
         return defaultValue;
     }
 
-    private static void send(HttpExchange exchange, int status, String type, byte[] body) throws IOException {
+    private static void sendJson(HttpExchange exchange, int status, String json) throws IOException {
+        send(exchange, status, "application/json; charset=utf-8", json);
+    }
+
+    private static void send(HttpExchange exchange, int status, String type, String body) throws IOException {
+        byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
         exchange.getResponseHeaders().set("Content-Type", type);
         exchange.getResponseHeaders().set("Cache-Control", "no-store");
-        exchange.sendResponseHeaders(status, body.length);
-        try (var response = exchange.getResponseBody()) { response.write(body); }
+        exchange.sendResponseHeaders(status, bytes.length);
+        try (var response = exchange.getResponseBody()) { response.write(bytes); }
     }
 
     private static byte[] resource(String name) {
@@ -82,5 +131,7 @@ public final class Main {
         } catch (IOException error) { throw new ExceptionInInitializerError(error); }
     }
 
-    private static byte[] bytes(String value) { return value.getBytes(StandardCharsets.UTF_8); }
+    private static String escape(String value) {
+        return value.replace("\\", "\\\\").replace("\"", "\\\"");
+    }
 }
